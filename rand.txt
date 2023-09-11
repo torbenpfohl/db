@@ -1,0 +1,15 @@
+- what does 'ld' mean?
+
+43106
+43112
+1
+4359
+
+##- die zahl im link in journeyRow_XX 
+##                        -> class="route"
+##                           -> Verlinkung des Zielbahnhofs bedeutet was?
+##
+##darmstadt hbf = 8000068
+##erbach(odenw) = 8001817
+##frankfurt(main)hbf = 8000105
+
