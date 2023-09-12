@@ -33,6 +33,10 @@ import os
 import xml.etree.ElementTree as ET
 import sqlite3
 import html
+import re
+import reverse_geocode
+import time
+import random
 
 class DatabaseBuilder:
   # results can also include stations in other countries, so i need to 
@@ -41,9 +45,25 @@ class DatabaseBuilder:
   # https://www.geonames.org/findNearbyPlaceName?lat=49.875803&lng=8.647740
   # https://nominatim.openstreetmap.org/search.php?q=49.875803%2C+8.647740&format=jsonv2
   # + more
+  stationsDbPath = os.getcwd()+os.sep+"stations"+os.sep+"stations.db"
+
+  # try decorators/wrappers
+  def wrapper(func):
+    def inner(*args, **kwargs):
+      while True:
+        func(*args, **kwargs)
+        rand = random.randint(60,120)
+        print(f"sleeping time: {rand}")
+        time.sleep(rand)
+    return inner
+
   def __init__(self):
     self.partialCities = list()
-    self.run()
+    try:
+      self.run()
+    except KeyboardInterrupt:
+      self.partialCities.pop()
+      self.close()
 
   def startup(self):
     # load last requested partial city
@@ -70,25 +90,33 @@ class DatabaseBuilder:
     
   def close(self):
     # save the partialCities list to file (append)
-    print(self.partialCities)
+    print(self.partialCities[-100:])
     partialCitiesFile = os.getcwd() + os.sep + "stations" + os.sep + "partialCities.txt"
     s = "\n".join(self.partialCities) + "\n"
     with open(partialCitiesFile, "a", encoding="utf-8") as file:
       file.write(s)
-
+    # print the count of already logged stations
+    con = sqlite3.connect(self.stationsDbPath)
+    cur = con.cursor()
+    count = cur.execute("select count(stationId) from stations").fetchall()
+    print(count)
+  
+  @wrapper
   def run(self):
     requestCounter = 0
     lastPartialCity = self.startup()
     partialCity = self.nextPartialCity(lastPartialCity)
-    while requestCounter < 2:
+    while requestCounter < 100:
       self.partialCities.append(partialCity)
       data = self.get(partialCity)
       formatedData = self.formatData(data)
-      if len(formatedData) == 0:
-        continue
-      germanStations = self.verifyData(formatedData)
-      if len(germanStations):
-        self.storeData(germanStations)
+      if len(formatedData) != 0:
+        # germanStations = self.verifyData(formatedData)
+        # germanStations2 = self.verifyData2(formatedData)
+        germanStations = self.verifyData3(formatedData)
+        # print(germanStations == germanStations2 == germanStations3)
+        if len(germanStations):
+          self.storeData(germanStations)
       partialCity = self.nextPartialCity(partialCity)
       requestCounter += 1
     self.close()
@@ -121,7 +149,10 @@ class DatabaseBuilder:
       data = data.removeprefix("SLs.sls=")
     if data.endswith(";SLs.showSuggestion();"):
       data = data.removesuffix(";SLs.showSuggestion();")
-    jData = json.loads(data)
+    try:
+      jData = json.loads(data)
+    except:
+      print(data)
     return jData
 
   def formatData(self, data):
@@ -133,8 +164,16 @@ class DatabaseBuilder:
       stationId = station["extId"]
       codedId = station["id"]
       lat = station["ycoord"]
+      if lat.startswith("-") and len(lat) < 7:
+        lat = "-" + lat.lstrip("-").rjust(6, "0")
+      elif len(lat) < 6:
+        lat = lat.rjust(6, "0")
       lat = lat[:-6] + "." + lat[-6:]
       lng = station["xcoord"]
+      if lng.startswith("-") and len(lng) < 7:
+        lng = "-" + lng.lstrip("-").rjust(6, "0")
+      elif len(lng) < 6:
+        lng = lng.rjust(6, "0")
       lng = lng[:-6] + "." + lng[-6:]
       stationNewFormat = {"stationName": stationName,
                           "stationId"  : stationId,
@@ -158,6 +197,30 @@ class DatabaseBuilder:
         germanStations.append(station)
     return germanStations
 
+  def verifyData2(self, stations):
+    # check geolocation (german station?)
+    # use a different service
+    # https://nominatim.openstreetmap.org/search.php?q=50.209096+12.199638&format=jsonv2
+    germanStations = list()
+    for station in stations:
+      lat = station["lat"]
+      lng = station["lng"]
+      url = f"https://nominatim.openstreetmap.org/search.php?q={lat}+{lng}&format=jsonv2"
+      response = requests.get(url).json()
+      addressName = response[0]["display_name"]
+      if re.search("(Deutschland|Germany)$", addressName):
+        germanStations.append(station)
+    return germanStations
+
+  def verifyData3(self, stations):
+    # check geolocations with local package
+    germanStations = list()
+    for station in stations:
+      address = reverse_geocode.search([(float(station["lat"]),float(station["lng"]))])
+      if address[0]["country_code"] == "DE":
+        germanStations.append(station)
+        print(station)
+    return germanStations
 
   def storeData(self, stations):
     # check for duplicates and save into database
