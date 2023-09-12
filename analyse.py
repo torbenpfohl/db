@@ -90,10 +90,10 @@ class DatabaseBuilder:
     
   def close(self):
     # save the partialCities list to file (append)
-    print(self.partialCities[-100:])
+    print(self.partialCities[-1])
     partialCitiesFile = os.getcwd() + os.sep + "stations" + os.sep + "partialCities.txt"
-    s = "\n".join(self.partialCities) + "\n"
-    with open(partialCitiesFile, "a", encoding="utf-8") as file:
+    s = self.partialCities[-1] + "\n"
+    with open(partialCitiesFile, "w", encoding="utf-8") as file:
       file.write(s)
     # print the count of already logged stations
     con = sqlite3.connect(self.stationsDbPath)
