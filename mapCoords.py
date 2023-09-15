@@ -18,7 +18,7 @@ class Map:
   def getFromDb(self):
     con = sqlite3.connect(self.stationsDbPath)
     cur = con.cursor()
-    res = cur.execute("SELECT * from stations limit 10")
+    res = cur.execute("SELECT * from stations limit 1000")
     content = res.fetchall()
     stationNames = list()
     stationIds = list()
@@ -43,12 +43,17 @@ class Map:
     df = self.getFromDb()
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.Lng, df.Lat), crs="EPSG:4326")
     print(gdf.head())
-    world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
+    # world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
+    path = "/home/torben/Downloads/DEU_adm0.shp"
+    germany = gpd.read_file(path)
+    print(germany.head())
+    print(germany.keys())
     #ax = world.clip([4,44,17,57]).plot()
     #gdf.plot(ax=ax, color="red")
     # plt.show(block=True)
-    gdf.plot(ax=world.clip([4,44,17,57]).plot(), marker=".", color="black", markersize=2)
-    plt.savefig("map")
+    #gdf.plot(ax=world.clip([4,44,17,57]).plot(), marker=".", color="black", markersize=2)
+    gdf.plot(ax=germany.plot(), marker=".", color="black", markersize=1)
+    plt.savefig("map", dpi=600)
 
 if __name__ == "__main__":
   map = Map()

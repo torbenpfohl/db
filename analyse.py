@@ -49,6 +49,7 @@ class DatabaseBuilder:
 
   # try decorators/wrappers
   def wrapper(func):
+    # TODO: fortschrittsanzeige für sleep-timer
     def inner(*args, **kwargs):
       while True:
         func(*args, **kwargs)
@@ -90,6 +91,8 @@ class DatabaseBuilder:
     
   def close(self):
     # save the partialCities list to file (append)
+    # TODO: next iteration: save them together with the number of suggestions
+    #       they pulled (and also the number of stations they eventually logged into the db)
     print(self.partialCities[-1])
     partialCitiesFile = os.getcwd() + os.sep + "stations" + os.sep + "partialCities.txt"
     s = self.partialCities[-1] + "\n"
@@ -152,7 +155,7 @@ class DatabaseBuilder:
     try:
       jData = json.loads(data)
     except:
-      print(data)
+      print(repr(data))
     return jData
 
   def formatData(self, data):
@@ -219,7 +222,7 @@ class DatabaseBuilder:
       address = reverse_geocode.search([(float(station["lat"]),float(station["lng"]))])
       if address[0]["country_code"] == "DE":
         germanStations.append(station)
-        print(station)
+        # print(station)
     return germanStations
 
   def storeData(self, stations):
