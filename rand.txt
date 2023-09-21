@@ -13,3 +13,12 @@
 ##erbach(odenw) = 8001817
 ##frankfurt(main)hbf = 8000105
 
+ergibt es sinn, die ankünft und verspätungen bei der ankunftzeit zu speichern?
+pro:
+- mehr informationen sind immer gut, wenn die infos da sind, kann ich sie auch 
+  mitspeichern, da sie sonst verloren gehen
+- ich könnte die funktionalität schreiben, aber mit einer flag optional machen
+
+contra:
+- noch mehr abfragen, kann bei request-limit dafür sorgen, dass ich weniger
+  absolut relevante informationen aufzeichne

@@ -17,8 +17,18 @@ from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 import re
+import sqlite3
+import os
 
 class Station:
+  """
+  the 'name' of the station is automaticly inserted from the database of
+  stations, it actually doesn't matter if the name is the stationId or
+  the stationName
+  storeData uses the stationId as the table-name in the database
+  """
+  dbPath = os.getcwd()+os.sep+"stations"+os.sep+"information.db"
+
   def __init__(self, name):
     self.name = name
     requestTimeDate = datetime.now()
@@ -28,7 +38,13 @@ class Station:
     #self.requestTime = "23:44"     #test
     self.htmlDocument = self.getData()
     self.dataPacket = self.extractRelevantData(self.htmlDocument)
-    self.storeData(self.dataPacket)
+    print(self.dataPacket, requestTimeDate)
+    print(len(self.dataPacket))
+    try:
+      stationId = int(self.name)
+      self.storeData(self.dataPacket, requestTimeDate, self.name)
+    except:
+      pass
 
 
   def getData(self):
@@ -111,21 +127,23 @@ class Station:
     # reverse through allRows because this way I can validate the planedTime
     #   and therefore calculate the delayedTime here too 
     planedTimeBefore = None
+    dataPackages = list()
     for row in reversed(allRows):
       # do platform in the beginning because the row might not belong to the
       # requested station 
-      platform = "".join([word for word in row.find("td", "platform").stripped_strings])
+      platform = "".join(row.find("td", "platform").stripped_strings)
       platform = platform[1:] if platform.startswith("-") else platform
-      platformStationMatch = re.search(r"^\d*", platform)
-      platformStation = None
-      if platformStationMatch:
-        platform = platformStationMatch.group()
-        platformStation = platform.replace(platformStationMatch.group(), "")
-      if platformStation and platformStation in otherStations:
+      platformNumber = re.search(r"^\d*", platform).group()
+      if platformNumber:
+        platform = platform.replace(platformNumber, "")
+      if platform and platform in otherStations:
         continue
+      dataPackage = dict()  # where all information gets stored
+      dataPackage["platformNumber"] = platformNumber
 
       planedTime = str(row.find("td", "time").string)
       # transform planedTime to datetime-object
+      # also: make sure the date is right
       if rowDate == 2:
         planedTime = datetime.strptime(planedTime+" "+dates[-1], "%H:%M %d.%m.%y")
         if planedTimeBefore:
@@ -135,16 +153,39 @@ class Station:
       else:
         planedTime = datetime.strptime(planedTime+" "+self.requestDate, "%H:%M %d.%m.%y")
       planedTimeBefore = planedTime
+      dataPackage["planedTime"] = planedTime
 
       transportationTypePicUrl = row.find("td", "train").a.img["src"]
       transportationType = re.search("(?<=/)[a-z_]+(?=_\d+x\d+.[a-z]+$)", transportationTypePicUrl).group()
       transportationType = str(transportationType)
+      dataPackage["transportationType"] = transportationType
       trainNameField = row.find_all("td", "train")[-1]
       trainUrl = "https://reiseauskunft.bahn.de" + str(trainNameField.a["href"])
+      dataPackage["trainUrl"] = trainUrl
       trainName = [re.compile(r"\s+").sub(" ", word) for word in trainNameField.stripped_strings]
       trainName = " ".join(trainName)
+      dataPackage["trainName"] = trainName
       route = row.find("td", "route")
       endstation = str("".join([word for word in route.span.a.stripped_strings]))
+      dataPackage["endstation"] = endstation
+      # extract route info in list of 2-tuples (station, planedTimeOnStation)
+      # do i need the time? if yes: than i need to verify which day and all that..
+      # 
+      if route.img:
+        route.img.replace_with("-")
+      route = "".join(route.stripped_strings).removeprefix(endstation).replace("\n", " ").split(" - ")
+      # route = [tuple(s.split("  ")) for s in route]
+      route = [s.split("  ")[0] for s in route]
+      # do I give this list to the stationManagement? 
+      # or do I make an extra call to the train-url and get the stations (and also 
+      # add them to the train)
+      # do I need a database for the trains?
+      # idea 1:
+      # pass route-stations to another function, but don't wait for it to finish
+      # -> multi-threading?
+      # idea 2:
+      # pass route-stations on a stack and let another function/program feast on
+      # it (but multi-threading) 
 
       issues = row.find("td", "ris")
       issuesText = "".join([word for word in issues.stripped_strings])
@@ -159,7 +200,7 @@ class Station:
           delayedTime = delayedTimeMatch.group()
           delayCause = issuesText.replace(delayedTime, "")
           # delayed by
-          #   if date is not avalable with the issuesText, than it will be
+          #   if date is not available with the issuesText, than it will be
           #   obvious while calculation the delayed by value (because it will
           #   be negative)
           hours, minutes = delayedTime.split(":")
@@ -175,21 +216,50 @@ class Station:
           delayCause = issuesText
       else:
         delayed = False
+      dataPackage["delayedTime"] = delayedTime
+      dataPackage["delayedBy"] = delayedBy
+      dataPackage["delayCause"] = delayCause
 
       # if delayed:
         # print(planedTime, delayed, repr(delayCause), delayedTime, delayedBy)
 
       delayOnTime_dbClass = "delayOnTime" in issues.span["class"] if issues.span else None
+      dataPackage["delayOnTime"] = delayOnTime_dbClass
 
     # turn text/NavigableString (zugplan, bahnsteig, etc.) with unicode() or str() into standalone text
 
     # wie organisiere ich die daten? 
-    return  # ein datenpaket
+      dataPackages.append(dataPackage)
+    return [i for i in reversed(dataPackages)] # ein datenpaket
   
   # determine next call-/query-time
   
-  def storeData(self, dataPacket):
+  def storeData(self, dataPacket, requestTimeDate, stationId):
     # metadaten speichern (abfragezeit, ?)
+    # eine große tabelle oder viele Kleine (z.B. für jede station eine, 
+    # oder für jeden zug eine)
+    # beispielabfragen: 
+    # - kumulierte verspätungen an allen bahnhöfen über eine bestimmte zeit
+    # - verspätungen an einem bahnhof über bestimmte zeit
+    # - verspätungsverlauf eines bestimmten zuges, auf einer bestimmten strecke
+    # - auflistung von verspätungsgründen (welche und wie viele jeweils)
+    # - bei wie vielen verspätungen gründe angegeben sind
+    # - wie viele züge fahren an einem bahnhof durchschnittlich
+    # ziel:
+    # - aufzeichnung aller verbindungen
+    # - aufzeichnung aller verspätungen (verlauf?, ultimative) 
+    # wir erstellen tabellen für:
+    # -> die stationen (jede station eine)
+    # -> für züge (zugname gepaart mit einem spezifischen tag und abfahrt- und 
+    #    ankunftbahnhof)
+    con = sqlite3.connect(self.dbPath)
+    cur = con.cursor()
+    stationId = int(stationId)
+    keys = list()
+    for entry in dataPacket:
+      if not keys:
+        keys = list(entry.keys())
+      
     pass
 
   # daten müssen weiter bereinigt werden.
@@ -214,5 +284,6 @@ if __name__ == "__main__":
   station4 = "Berlin+Hbf"
   station5 = "Hamburg+Hbf"
   station6 = "Lüneburg"
+  station7 = "000100001"
   darmstadt = Station(station0)
   

@@ -17,3 +17,4 @@ class Management:
       if False: break  # statt False ein Kommando oder Tastendruck
       # zugriff auf eine liste mit stationen und zugehörigen uhrzeiten
       #   (uhrzeit ist die zeit, zu der die station abgefragt werden soll)
+      

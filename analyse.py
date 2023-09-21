@@ -23,6 +23,14 @@ IDEA 2:
 same idea of spreading the requests.
 but now build them with the id starting with 000000000 and increment
 
+NEW IDEA 3:
+since now I have a nice big database, I can go from the stationIds and increment
+and decrement this idea and do a request with it.
+if I get an error (not valid station), I stop in this direction
+still need to verify the station before inserting it into the database
+extra:
+  saving the last time I made a successful request to the station (to keep
+  track of the active stations.)
 
 """
 
@@ -58,59 +66,80 @@ class DatabaseBuilder:
         time.sleep(rand)
     return inner
 
-  def __init__(self):
-    self.partialCities = list()
+  def __init__(self, buildWith):
+    """
+    buildWith : "city" or "id"
+    """
+    self.lastPartialRequests = list()
+    if buildWith == "city":
+      filename = "partialCities.txt"
+      run = self.run
+    elif buildWith == "id":
+      filename = "lastStationId.txt"
+      run = self.run2
+    else:
+      print("not a valid buildWith value: 'city' or 'id'")
+      return
+    
+    self.dbConnect = sqlite3.connect(os.getcwd()+os.sep+"stations"+os.sep+"stations.db")
     try:
-      self.run()
+      run()
+      self.dbConnect.close()
     except KeyboardInterrupt:
-      self.partialCities.pop()
-      self.close()
+      self.lastPartialRequests.pop()
+      self.close("stations", filename)
+      self.dbConnect.close()
+    except Exception as error:
+      print(repr(error))
+      self.lastPartialRequests.pop()
+      self.close("stations", filename)
+      self.dbConnect.close()
 
-  def startup(self):
+  def startup(self, foldername, filename):
     # load last requested partial city
-    partialStations = "partialCities.txt"
     currentDir = os.getcwd()
-    targetDir = currentDir + os.sep + "stations"
-    if "stations" not in os.listdir(currentDir):
-      os.mkdir("stations")
-    if partialStations not in os.listdir(targetDir):
-      open(targetDir+os.sep+partialStations, "a").close()
-    with open(targetDir+os.sep+partialStations, "rb") as f:
-      try:
-        f.seek(-2, 2)
-        while f.read(1) != b"\n":
-          f.seek(-2, 1)
-      except:
-        f.seek(0)
-      lastLine = f.readline().decode(encoding="utf-8").removesuffix("\n")
-    if lastLine == "":
+    targetDir = currentDir + os.sep + foldername
+    if foldername not in os.listdir(currentDir):
+      os.mkdir(foldername)
+    if filename not in os.listdir(targetDir):
+      open(targetDir+os.sep+filename, "a").close()
       lastPartialCity = ""
     else:
-      lastPartialCity = lastLine
+      with open(targetDir+os.sep+filename, "rb") as f:
+        try:
+          f.seek(-2, 2)
+          while f.read(1) != b"\n":
+            f.seek(-2, 1)
+        except:
+          f.seek(0)
+        lastLine = f.readline().decode(encoding="utf-8").removesuffix("\n")
+      if lastLine == "":
+        lastPartialCity = ""
+      else:
+        lastPartialCity = lastLine
     return lastPartialCity
     
-  def close(self):
+  def close(self, foldername, filename):
     # save the partialCities list to file (append)
     # TODO: next iteration: save them together with the number of suggestions
     #       they pulled (and also the number of stations they eventually logged into the db)
-    print(self.partialCities[-1])
-    partialCitiesFile = os.getcwd() + os.sep + "stations" + os.sep + "partialCities.txt"
-    s = self.partialCities[-1] + "\n"
+    print(self.lastPartialRequests[-1])
+    partialCitiesFile = os.getcwd() + os.sep + foldername + os.sep + filename
+    s = self.lastPartialRequests[-1] + "\n"
     with open(partialCitiesFile, "w", encoding="utf-8") as file:
       file.write(s)
     # print the count of already logged stations
     con = sqlite3.connect(self.stationsDbPath)
-    cur = con.cursor()
-    count = cur.execute("select count(stationId) from stations").fetchall()
+    count = con.execute("select count(stationId) from stations").fetchall()
     print(count)
   
   @wrapper
   def run(self):
     requestCounter = 0
-    lastPartialCity = self.startup()
+    lastPartialCity = self.startup("stations", "partialCities.txt")
     partialCity = self.nextPartialCity(lastPartialCity)
     while requestCounter < 100:
-      self.partialCities.append(partialCity)
+      self.lastPartialRequests.append(partialCity)
       data = self.get(partialCity)
       formatedData = self.formatData(data)
       if len(formatedData) != 0:
@@ -122,7 +151,60 @@ class DatabaseBuilder:
           self.storeData(germanStations)
       partialCity = self.nextPartialCity(partialCity)
       requestCounter += 1
-    self.close()
+    self.close("stations", "partialCities.txt")
+
+  @wrapper
+  def run2(self):
+    lastStationId = self.startup("stations", "lastStationId.txt")
+    # stationsPath = os.getcwd()+os.sep+"stations"+os.sep+"stations.db"
+    # con = sqlite3.connect(stationsPath)
+    cur = self.dbConnect.cursor()
+    request = cur.execute(f"select stationId from stations where stationId>'{lastStationId}' order by stationId asc")
+    for i in range(10):
+      stationId = request.fetchone()[0]
+      if lastStationId > stationId:
+        continue
+      self.backwards(stationId, lastStationId)
+      lastStationId = self.forwards(stationId)
+    self.close("stations", "lastStationId.txt")
+    cur.close()
+
+  def run3(self):
+    """
+    post-processing: add the right country to the database
+    define a box (min and max values for lat and lng)
+    all the others are passed to verify and verify2 (in batches)
+    """
+    pass
+
+  def backwards(self, stationId, lastStationId):
+    stationId = str(int(stationId) - 1).rjust(9,"0")
+    while lastStationId < stationId:
+      data = self.get(stationId)
+      formatedData = self.formatData(data)
+      if len(formatedData) == 1:
+        self.storeData(formatedData)
+        print(stationId, 175)
+      else:
+        return
+      stationId = str(int(stationId) - 1).rjust(9,"0")
+
+  def forwards(self, stationId):
+    lastStationId = stationId
+    stationId = str(int(stationId) + 1).rjust(9,"0")
+    #while True:
+    for i in range(10):
+      data = self.get(stationId)
+      formatedData = self.formatData(data)
+      if len(formatedData) == 1:
+        self.storeData(formatedData)
+        print(stationId, 189)
+        lastStationId = stationId
+        self.lastPartialRequests.append(lastStationId)
+        stationId = str(int(stationId) + 1).rjust(9,"0")
+      else:
+        return lastStationId
+    return lastStationId
 
   def nextPartialCity(self, lastPartialCity):
     letters = string.ascii_lowercase + " _"
@@ -181,7 +263,8 @@ class DatabaseBuilder:
       stationNewFormat = {"stationName": stationName,
                           "stationId"  : stationId,
                           "lat"        : lat,
-                          "lng"        : lng
+                          "lng"        : lng,
+                          "country"    : None
                           }
       stationsNewFormat.append(stationNewFormat)
     return stationsNewFormat
@@ -197,6 +280,7 @@ class DatabaseBuilder:
       root = ET.fromstring(response.text)
       countryCode = root[0].find("countryCode").text
       if countryCode == "DE":
+        station["country"] = "de"
         germanStations.append(station)
     return germanStations
 
@@ -212,6 +296,7 @@ class DatabaseBuilder:
       response = requests.get(url).json()
       addressName = response[0]["display_name"]
       if re.search("(Deutschland|Germany)$", addressName):
+        station["country"] = "de"
         germanStations.append(station)
     return germanStations
 
@@ -221,6 +306,7 @@ class DatabaseBuilder:
     for station in stations:
       address = reverse_geocode.search([(float(station["lat"]),float(station["lng"]))])
       if address[0]["country_code"] == "DE":
+        station["country"] = "de"
         germanStations.append(station)
         # print(station)
     return germanStations
@@ -228,9 +314,9 @@ class DatabaseBuilder:
   def storeData(self, stations):
     # check for duplicates and save into database
     # use sqlite as a start
-    dbLocation = os.getcwd() + os.sep + "stations" + os.sep + "stations.db"
-    con = sqlite3.connect(dbLocation)
-    cur = con.cursor()
+    # dbLocation = os.getcwd() + os.sep + "stations" + os.sep + "stations.db"
+    # con = sqlite3.connect(dbLocation)
+    cur = self.dbConnect.cursor()
     columns = ",".join(stations[0].keys())
     columnCount = len(stations[0].keys())
     cur.execute(f"CREATE TABLE if not exists stations({columns})")
@@ -245,8 +331,9 @@ class DatabaseBuilder:
     if len(stationsForDb) > 0:
       placeHolders = ",".join(["?"] * columnCount)
       cur.executemany(f"INSERT INTO stations VALUES({placeHolders})", stationsForDb)
-      con.commit()
-    con.close()
+      self.dbConnect.commit()
+    cur.close()
+  
 
 class Analyse:
   def __init__(self, partialCity):
@@ -279,4 +366,4 @@ class Analyse:
 if __name__ == "__main__":
   # for abc in string.ascii_lowercase:
     # analyse = Analyse(abc)
-  db = DatabaseBuilder()
+  db = DatabaseBuilder("id")
