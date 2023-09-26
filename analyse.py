@@ -47,6 +47,9 @@ import time
 import random
 
 class DatabaseBuilder:
+  """
+  country_codes = "de", 
+  """
   # results can also include stations in other countries, so i need to 
   # reverse geocode as well.
   # use multiple services (rate limited free version available)
@@ -66,33 +69,45 @@ class DatabaseBuilder:
         time.sleep(rand)
     return inner
 
-  def __init__(self, buildWith):
+  def __init__(self, mode):
     """
-    buildWith : "city" or "id"
+    mode : "city" or "id" ord "addCountries
+    id needs a database to draw ids from (TODO: catch that)
     """
     self.lastPartialRequests = list()
-    if buildWith == "city":
-      filename = "partialCities.txt"
-      run = self.run
-    elif buildWith == "id":
-      filename = "lastStationId.txt"
-      run = self.run2
-    else:
-      print("not a valid buildWith value: 'city' or 'id'")
-      return
+    match mode:
+      case "city":
+        filename = "partialCities.txt"
+        run = self.run
+        def close():
+          self.lastPartialRequests.pop()
+          self.close("stations", filename)
+      case "id":
+        filename = "lastStationId.txt"
+        run = self.run2
+        def close():
+          self.lastPartialRequests.pop()
+          self.close("stations", filename)
+      case "addCountry":
+        run = self.run3
+        def close():
+          self.storeCountryCodes()
+        # close = lambda: self.storeCountryCodes()
+      case _:
+        print("not a valid buildWith value: 'city' or 'id', or 'addCountry")
+        return
+
     
     self.dbConnect = sqlite3.connect(os.getcwd()+os.sep+"stations"+os.sep+"stations.db")
     try:
       run()
       self.dbConnect.close()
     except KeyboardInterrupt:
-      self.lastPartialRequests.pop()
-      self.close("stations", filename)
+      close()
       self.dbConnect.close()
     except Exception as error:
       print(repr(error))
-      self.lastPartialRequests.pop()
-      self.close("stations", filename)
+      close()
       self.dbConnect.close()
 
   def startup(self, foldername, filename):
@@ -159,21 +174,102 @@ class DatabaseBuilder:
     # stationsPath = os.getcwd()+os.sep+"stations"+os.sep+"stations.db"
     # con = sqlite3.connect(stationsPath)
     cur = self.dbConnect.cursor()
-    request = cur.execute(f"select stationId from stations where stationId>'{lastStationId}' order by stationId asc")
-    for i in range(10):
-      stationId = request.fetchone()[0]
+    request = cur.execute(f"select stationId from stations where stationId > '{lastStationId}' order by stationId asc")
+    stationId = request.fetchone()[0]
+    for i in range(5):
+      nextStationIdInDb = request.fetchone()[0]
+      print("Starting point:", stationId)
       if lastStationId > stationId:
         continue
       self.backwards(stationId, lastStationId)
-      lastStationId = self.forwards(stationId)
+      lastStationId = self.forwards(stationId, nextStationIdInDb)
+      stationId = nextStationIdInDb
+    self.lastPartialRequests.append(lastStationId)
     self.close("stations", "lastStationId.txt")
     cur.close()
+
+  def loadCountryCodes(self):
+    """
+    uses ISO 3166-1 alpha-2 codes
+    """
+    filename = "countryCodes.json"
+    if "stations" not in os.listdir(os.getcwd()):
+      os.mkdir("stations")
+    if filename not in os.listdir(os.getcwd()+os.sep+"stations"):
+      open(os.getcwd()+os.sep+"stations"+os.sep+filename, "x").close()
+      countryCodes = dict()
+    else: 
+      with open(os.getcwd()+os.sep+"stations"+os.sep+filename) as file:
+        countryCodes = json.load(file)
+    return countryCodes
+
+  def storeCountryCodes(self):
+    filename = "countryCodes.json"
+    if "stations" not in os.listdir(os.getcwd()):
+      os.mkdir("stations")
+    with open(os.getcwd()+os.sep+"stations"+os.sep+filename, "a") as file:
+      json.dump(self.countryCodes, file)
+    return
 
   def run3(self):
     """
     post-processing: add the right country to the database
     define a box (min and max values for lat and lng)
     all the others are passed to verify and verify2 (in batches)
+    """
+    # big box
+    # - lat 48-54 lng: 8.5-12
+    # regional boxes:
+    # - lat: 51-54 lng: 12-14
+    # - lat: 49.5-52 lng: 7-8.5
+    # - lat: 50-51.5 lng: 6.5-7
+    # - lat: 48-49.5 lng: 12-12.5
+    # - lat: 54-54.5 lng: 8.5-11.5
+    self.countryCodes = self.loadCountryCodes()
+    bounds = [
+      {"latLower": 48, "latUpper": 54, "lngLower": 8.5, "lngUpper": 12},
+      {"latLower": 51, "latUpper": 54, "lngLower": 12, "lngUpper": 14},
+      {"latLower": 49.5, "latUpper": 52, "lngLower": 7, "lngUpper": 8.5},
+      {"latLower": 50, "latUpper": 51.5, "lngLower": 6.5, "lngUpper": 7},
+      {"latLower": 48, "latUpper": 49.5, "lngLower": 12, "lngUpper": 12.5},
+      {"latLower": 54, "latUpper": 54.5, "lngLower": 8.5, "lngUpper": 11.5},
+    ]
+    cur = self.dbConnect.cursor()
+    request = cur.execute("select * from stations order by stationId")
+    requestCounter = 0
+    while True:
+      stationName, stationId, lat, lng, country = request.fetchone()
+      if country:
+        continue
+      for bound in bounds:
+        if bound["latLower"] <= float(lat) <= bound["latUpper"] and \
+            bound["lngLower"] <= float(lng) <= bound["lngUpper"]:
+          # update station entry
+          cur.execute(f"update stations set country=DE where stationId={stationId}")
+          self.dbConnect.commit()
+          print(stationName, "is in DE")
+          break
+      else:
+        if requestCounter >= 10:
+          rand = random.randint(20,60)
+          print(f"sleep for {rand} seconds")
+          time.sleep(rand)
+          requestCounter = 0
+        if requestCounter % 2 == 0:
+          countryCode = self.getCountry(lat, lng)
+        else:
+          countryCode = self.getCountry2(lat, lng)
+        cur.execute(f"update stations set country={countryCode} where stationId={stationId}")
+        self.dbConnect.commit()
+        print(stationName, "is in", countryCode)
+        requestCounter += 1
+    self.storeCountryCodes()
+
+
+  def run4(self):
+    """
+    search for stationId-ranges that are not in the database yet
+    e.g. 000102569 to 000102587, because e.g. 000102573 is a valid stationId
     """
     pass
 
@@ -184,24 +280,24 @@ class DatabaseBuilder:
       formatedData = self.formatData(data)
       if len(formatedData) == 1:
         self.storeData(formatedData)
-        print(stationId, 175)
       else:
         return
       stationId = str(int(stationId) - 1).rjust(9,"0")
+    return
 
-  def forwards(self, stationId):
+  def forwards(self, stationId, nextStationIdInDb):
     lastStationId = stationId
-    stationId = str(int(stationId) + 1).rjust(9,"0")
-    #while True:
-    for i in range(10):
+    while True:
+      stationId = str(int(stationId) + 1).rjust(9,"0")
+      if stationId == nextStationIdInDb:
+        return stationId
       data = self.get(stationId)
       formatedData = self.formatData(data)
       if len(formatedData) == 1:
         self.storeData(formatedData)
-        print(stationId, 189)
         lastStationId = stationId
         self.lastPartialRequests.append(lastStationId)
-        stationId = str(int(stationId) + 1).rjust(9,"0")
+        # stationId = str(int(stationId) + 1).rjust(9,"0")
       else:
         return lastStationId
     return lastStationId
@@ -269,36 +365,33 @@ class DatabaseBuilder:
       stationsNewFormat.append(stationNewFormat)
     return stationsNewFormat
 
-  def verifyData(self, stations):
-    # check geolocation (german station?)
-    germanStations = list()
-    for station in stations:
-      lat = station["lat"]
-      lng = station["lng"]
-      url = f"https://www.geonames.org/findNearbyPlaceName?lat={lat}&lng={lng}"
-      response = requests.get(url)
-      root = ET.fromstring(response.text)
-      countryCode = root[0].find("countryCode").text
-      if countryCode == "DE":
-        station["country"] = "de"
-        germanStations.append(station)
-    return germanStations
+  def getCountry(self, lat, lng):
+    url = f"https://www.geonames.org/findNearbyPlaceName?lat={lat}&lng={lng}"
+    response = requests.get(url)
+    root = ET.fromstring(response.text)
+    country = root[0].find("countryCode").text
+    alpha2Code = self.countryCodes.get(country)
+    if alpha2Code:
+      return alpha2Code
+    else:
+      alpha2Code = input(f"enter ISO 3166-1 alpha-2 code for '{country}': ")
+      self.countryCodes[country] = alpha2Code
+      return alpha2Code
 
-  def verifyData2(self, stations):
-    # check geolocation (german station?)
+  def getCountry2(self, lat, lng):
     # use a different service
-    # https://nominatim.openstreetmap.org/search.php?q=50.209096+12.199638&format=jsonv2
-    germanStations = list()
-    for station in stations:
-      lat = station["lat"]
-      lng = station["lng"]
-      url = f"https://nominatim.openstreetmap.org/search.php?q={lat}+{lng}&format=jsonv2"
-      response = requests.get(url).json()
-      addressName = response[0]["display_name"]
-      if re.search("(Deutschland|Germany)$", addressName):
-        station["country"] = "de"
-        germanStations.append(station)
-    return germanStations
+    url = f"https://nominatim.openstreetmap.org/search.php?q={lat}+{lng}&format=jsonv2"
+    response = requests.get(url).json()
+    addressName = response[0]["display_name"]
+    country = addressName.split(",")[-1]
+    alpha2Code = self.countryCodes.get(countryCode)
+    if alpha2Code:
+      return alpha2Code
+    else:
+      alpha2Code = input(f"enter ISO 3166-1 alpha-2 code for '{countryCode}': ")
+      self.countryCodes[countryCode] = alpha2Code
+      return alpha2Code
+
 
   def verifyData3(self, stations):
     # check geolocations with local package
@@ -306,7 +399,7 @@ class DatabaseBuilder:
     for station in stations:
       address = reverse_geocode.search([(float(station["lat"]),float(station["lng"]))])
       if address[0]["country_code"] == "DE":
-        station["country"] = "de"
+        station["country"] = "DE"
         germanStations.append(station)
         # print(station)
     return germanStations
@@ -366,4 +459,5 @@ class Analyse:
 if __name__ == "__main__":
   # for abc in string.ascii_lowercase:
     # analyse = Analyse(abc)
-  db = DatabaseBuilder("id")
+  db = DatabaseBuilder("addCountry")
+  # DatabaseBuilder.loadCountryCodes()
