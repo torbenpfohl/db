@@ -45,6 +45,7 @@ import re
 import reverse_geocode
 import time
 import random
+import traceback
 
 class DatabaseBuilder:
   """
@@ -107,6 +108,7 @@ class DatabaseBuilder:
       self.dbConnect.close()
     except Exception as error:
       print(repr(error))
+      print(traceback.format_exc())
       close()
       self.dbConnect.close()
 
@@ -196,8 +198,9 @@ class DatabaseBuilder:
     if "stations" not in os.listdir(os.getcwd()):
       os.mkdir("stations")
     if filename not in os.listdir(os.getcwd()+os.sep+"stations"):
-      open(os.getcwd()+os.sep+"stations"+os.sep+filename, "x").close()
       countryCodes = dict()
+      with open(os.getcwd()+os.sep+"stations"+os.sep+filename, "a") as file:
+        json.dump(countryCodes, file)
     else: 
       with open(os.getcwd()+os.sep+"stations"+os.sep+filename) as file:
         countryCodes = json.load(file)
@@ -207,7 +210,7 @@ class DatabaseBuilder:
     filename = "countryCodes.json"
     if "stations" not in os.listdir(os.getcwd()):
       os.mkdir("stations")
-    with open(os.getcwd()+os.sep+"stations"+os.sep+filename, "a") as file:
+    with open(os.getcwd()+os.sep+"stations"+os.sep+filename, "w") as file:
       json.dump(self.countryCodes, file)
     return
 
@@ -235,8 +238,10 @@ class DatabaseBuilder:
       {"latLower": 54, "latUpper": 54.5, "lngLower": 8.5, "lngUpper": 11.5},
     ]
     cur = self.dbConnect.cursor()
-    request = cur.execute("select * from stations order by stationId")
+    curExec = self.dbConnect.cursor()
+    request = cur.execute("select * from stations where country is NULL order by stationId")
     requestCounter = 0
+    # for i in range(100):
     while True:
       stationName, stationId, lat, lng, country = request.fetchone()
       if country:
@@ -245,13 +250,14 @@ class DatabaseBuilder:
         if bound["latLower"] <= float(lat) <= bound["latUpper"] and \
             bound["lngLower"] <= float(lng) <= bound["lngUpper"]:
           # update station entry
-          cur.execute(f"update stations set country=DE where stationId={stationId}")
+          curExec.execute(f"update stations set country='DE' where stationId='{stationId}'")
           self.dbConnect.commit()
           print(stationName, "is in DE")
           break
       else:
-        if requestCounter >= 10:
-          rand = random.randint(20,60)
+        print("->   else branch  <-")
+        if requestCounter >= 12:
+          rand = random.randint(20,30)
           print(f"sleep for {rand} seconds")
           time.sleep(rand)
           requestCounter = 0
@@ -259,7 +265,7 @@ class DatabaseBuilder:
           countryCode = self.getCountry(lat, lng)
         else:
           countryCode = self.getCountry2(lat, lng)
-        cur.execute(f"update stations set country={countryCode} where stationId={stationId}")
+        curExec.execute(f"update stations set country='{countryCode}' where stationId='{stationId}'")
         self.dbConnect.commit()
         print(stationName, "is in", countryCode)
         requestCounter += 1
@@ -366,6 +372,10 @@ class DatabaseBuilder:
     return stationsNewFormat
 
   def getCountry(self, lat, lng):
+    """
+    hourly limit of 1000 requests per ip
+    TODO: catch this automaticly and stop using this service than
+    """
     url = f"https://www.geonames.org/findNearbyPlaceName?lat={lat}&lng={lng}"
     response = requests.get(url)
     root = ET.fromstring(response.text)
@@ -384,12 +394,12 @@ class DatabaseBuilder:
     response = requests.get(url).json()
     addressName = response[0]["display_name"]
     country = addressName.split(",")[-1]
-    alpha2Code = self.countryCodes.get(countryCode)
+    alpha2Code = self.countryCodes.get(country)
     if alpha2Code:
       return alpha2Code
     else:
-      alpha2Code = input(f"enter ISO 3166-1 alpha-2 code for '{countryCode}': ")
-      self.countryCodes[countryCode] = alpha2Code
+      alpha2Code = input(f"enter ISO 3166-1 alpha-2 code for '{country}': ")
+      self.countryCodes[country] = alpha2Code
       return alpha2Code
 
 
