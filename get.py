@@ -11,8 +11,6 @@ extra.
   stichprobenartig testen, ob die abstände zwischen den abfragen ok sind
 """
 
-# starten mit einer leichten datenbank - splite?
-
 from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
@@ -30,6 +28,7 @@ class Station:
   dbPath = os.getcwd()+os.sep+"stations"+os.sep+"information.db"
 
   def __init__(self, name):
+    self.excessStations = set()
     self.name = name
     requestTimeDate = datetime.now()
     self.requestDate = requestTimeDate.strftime("%d.%m.%y")
@@ -37,14 +36,16 @@ class Station:
     #self.requestDate = "03.09.23"  #test
     #self.requestTime = "23:44"     #test
     self.htmlDocument = self.getData()
-    self.dataPacket = self.extractRelevantData(self.htmlDocument)
-    print(self.dataPacket, requestTimeDate)
-    print(len(self.dataPacket))
+    self.dataPackage = self.extractRelevantData(self.htmlDocument)
+    print(self.dataPackage, requestTimeDate)
+    print(len(self.dataPackage))
     try:
       stationId = int(self.name)
-      self.storeData(self.dataPacket, requestTimeDate, self.name)
+      self.storeData(self.dataPackage, requestTimeDate, self.name)
     except:
       pass
+    print(self.excessStations)
+    #return self.excessStations
 
 
   def getData(self):
@@ -90,8 +91,7 @@ class Station:
     #   class = platform    # bahnsteig
     #   class = ris         # besonderheiten: zugausfall, verspätung, z.T. auch meldung von pünktlichkeit
 
-    # extract data from rows and validate those rows
-
+    # do we have to dates? 
     datesText = "".join([word for word in parsedHtml.find("div", id="sqResult").h2.strong.stripped_strings])
     dates = re.findall(r"\d{2}.\d{2}.\d{2}", datesText)
     if dates:
@@ -118,11 +118,12 @@ class Station:
     # create a list of stations that are also present (but that I didn't ask for)
     otherStationsText = parsedHtml.find("p", "lastParagraph").find_all("a")
     otherStations = ["".join(a.stripped_strings) for a in otherStationsText]
+    self.excessStations.update(otherStations)
     print(otherStations)
 
     allRows = parsedHtml.find_all("tr", id=re.compile("^journeyRow_\d+"))
 
-    print("Entries:", len(allRows))
+    print("Rows in document:", len(allRows))
 
     # reverse through allRows because this way I can validate the planedTime
     #   and therefore calculate the delayedTime here too 
@@ -157,17 +158,21 @@ class Station:
 
       transportationTypePicUrl = row.find("td", "train").a.img["src"]
       transportationType = re.search("(?<=/)[a-z_]+(?=_\d+x\d+.[a-z]+$)", transportationTypePicUrl).group()
-      transportationType = str(transportationType)
       dataPackage["transportationType"] = transportationType
+
       trainNameField = row.find_all("td", "train")[-1]
       trainUrl = "https://reiseauskunft.bahn.de" + str(trainNameField.a["href"])
       dataPackage["trainUrl"] = trainUrl
+      # TODO: how long is the url valid?
+
       trainName = [re.compile(r"\s+").sub(" ", word) for word in trainNameField.stripped_strings]
       trainName = " ".join(trainName)
       dataPackage["trainName"] = trainName
+
       route = row.find("td", "route")
       endstation = str("".join([word for word in route.span.a.stripped_strings]))
       dataPackage["endstation"] = endstation
+
       # extract route info in list of 2-tuples (station, planedTimeOnStation)
       # do i need the time? if yes: than i need to verify which day and all that..
       # 
@@ -175,30 +180,27 @@ class Station:
         route.img.replace_with("-")
       route = "".join(route.stripped_strings).removeprefix(endstation).replace("\n", " ").split(" - ")
       # route = [tuple(s.split("  ")) for s in route]
-      route = [s.split("  ")[0] for s in route]
-      # do I give this list to the stationManagement? 
-      # or do I make an extra call to the train-url and get the stations (and also 
+      route = [placeAndTime.split("  ")[0].replace(" (Halt entfällt)", "") for placeAndTime in route]
+      self.excessStations.update(route)
+      # do I make an extra call to the train-url and get the stations (and also 
       # add them to the train)
       # do I need a database for the trains?
-      # idea 1:
-      # pass route-stations to another function, but don't wait for it to finish
-      # -> multi-threading?
-      # idea 2:
-      # pass route-stations on a stack and let another function/program feast on
-      # it (but multi-threading) 
 
       issues = row.find("td", "ris")
-      issuesText = "".join([word for word in issues.stripped_strings])
+      issuesText = "".join([word for word in issues.stripped_strings])  # "".join(issues.stripped_strings)
       delayedTime = None
-      delayCause = None
       delayedBy = None
+      delayCause = None
       if len(issuesText) != 0:
-        delayed = True
-        # also search for a new time, like a new date (if present)
+        # TODO: also search for a new time, like a new date (if present)
+        #   as well as understanding, what other configurations are possible in this cell
+        # TODO: look in the route-box for red text - it might contain more reasons for delays 
         delayedTimeMatch = re.search(r"\d{2}:\d{2}", issuesText)
         if delayedTimeMatch:
           delayedTime = delayedTimeMatch.group()
           delayCause = issuesText.replace(delayedTime, "")
+          if delayCause == "":
+            delayCause = None
           # delayed by
           #   if date is not available with the issuesText, than it will be
           #   obvious while calculation the delayed by value (because it will
@@ -207,34 +209,26 @@ class Station:
           delayedTime = planedTime.replace(hour=int(hours), minute=int(minutes))
           delayedBy = delayedTime - planedTime
           if delayedBy.total_seconds() == 0:
-            delayed = False
+            delayedTime = None
+            delayedBy = None
           elif delayedBy.total_seconds() < 0:
             delayedTime += timedelta(days=1)
             delayedBy += timedelta(days=1)
         else:
-          delayed = True
           delayCause = issuesText
-      else:
-        delayed = False
       dataPackage["delayedTime"] = delayedTime
       dataPackage["delayedBy"] = delayedBy
       dataPackage["delayCause"] = delayCause
 
-      # if delayed:
-        # print(planedTime, delayed, repr(delayCause), delayedTime, delayedBy)
-
       delayOnTime_dbClass = "delayOnTime" in issues.span["class"] if issues.span else None
       dataPackage["delayOnTime"] = delayOnTime_dbClass
 
-    # turn text/NavigableString (zugplan, bahnsteig, etc.) with unicode() or str() into standalone text
-
-    # wie organisiere ich die daten? 
       dataPackages.append(dataPackage)
-    return [i for i in reversed(dataPackages)] # ein datenpaket
+    return [i for i in reversed(dataPackages)]
   
   # determine next call-/query-time
   
-  def storeData(self, dataPacket, requestTimeDate, stationId):
+  def storeData(self, dataPackage, requestTimeDate, stationId):
     # metadaten speichern (abfragezeit, ?)
     # eine große tabelle oder viele Kleine (z.B. für jede station eine, 
     # oder für jeden zug eine)
@@ -256,7 +250,7 @@ class Station:
     cur = con.cursor()
     stationId = int(stationId)
     keys = list()
-    for entry in dataPacket:
+    for entry in dataPackage:
       if not keys:
         keys = list(entry.keys())
       
@@ -285,5 +279,5 @@ if __name__ == "__main__":
   station5 = "Hamburg+Hbf"
   station6 = "Lüneburg"
   station7 = "000100001"
-  darmstadt = Station(station0)
+  darmstadt = Station(station3)
   
