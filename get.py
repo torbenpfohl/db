@@ -41,7 +41,7 @@ class Station:
     print(len(self.dataPackage))
     try:
       stationId = int(self.name)
-      self.storeData(self.dataPackage, requestTimeDate, self.name)
+      #self.storeData(self.dataPackage, requestTimeDate, self.name)
     except:
       pass
     print(self.excessStations)
@@ -186,6 +186,7 @@ class Station:
       # add them to the train)
       # do I need a database for the trains?
 
+    # TODO: combine delayed stuff into 'issues and add a field for 'Fahrt fällt aus' with boolean datatype
       issues = row.find("td", "ris")
       issuesText = "".join([word for word in issues.stripped_strings])  # "".join(issues.stripped_strings)
       delayedTime = None
@@ -268,6 +269,72 @@ class Station:
   #  --> ??? (Entscheidung dokumentieren) 
   # Bsp 4: 
 
+class Train:
+  """
+  is called with an url
+  TODO: can also get its data from a database (redis) that is populated by the Stations-class
+    -> idea: reference the row of redis-data and in the end call store with this data to store into a more permantent database
+  """
+  def __init__(self, url):
+    self.url = url  # TODO: enthält datum und zeit und andere parameter: welche brauche ich und ergibt es sinn, diese zu verändern? (z.B. zeit anpassen)
+    data = self.get(self.url)
+    dataPackage = self.extractRelevantData(data)
+  
+  def get(self, url):
+    response = requests.get(url)
+    return response.text
+
+  def extractRelevantData(self, data):
+    parsedHtml = BeautifulSoup(data, "html.parser")
+    # route rows -> dict (order is important)
+    # route: 
+    #   station, planedArrTime, planedDepTime, delayedArrTime, delayedDepTime, platformNumber, ,issues
+    # Company:
+    dataPackage = dict()
+    dataPackage["route"] = dict()
+    *companyRaw, = parsedHtml.find("div", "tqRemarks").stripped_strings
+    for entry in companyRaw:
+      if re.match(r"^Betreiber:", entry):
+        company = entry.removeprefix("Betreiber:").strip()
+        break
+      else:
+        company = None
+    dataPackage["company"] = company
+
+    routeRows = parsedHtml.find_all("div", class_=re.compile(r"tqRow trainrow_\d"))
+    for index, row in enumerate(routeRows):
+      dataPackage["route"][index] = dict()
+
+      station = row.find("div", class_=re.compile("station")).find("a").string
+      dataPackage["route"][index]["station"] = station
+
+      arr = row.find("div", class_="arrival")
+      arrTime = [s for s in arr.stripped_strings if re.search(r"\d{1,2}:\d{2}", s)]
+      dataPackage["route"][index]["planedArrTime"] = arrTime[0].split(" ")[-1] if len(arrTime) > 0 else None
+      dataPackage["route"][index]["delayedArrTime"] = arrTime[-1] if len(arrTime) > 1 else None
+
+      dep = row.find("div", class_="departure")
+      depTime = [s for s in dep.stripped_strings if re.search(r"\d{1,2}:\d{2}", s)]
+      dataPackage["route"][index]["planedDepTime"] = depTime[0].split(" ")[-1] if len(depTime) > 0 else None
+      dataPackage["route"][index]["delayedDepTime"] = depTime[-1] if len(depTime) > 1 else None
+
+      platformRaw = row.find("div", class_="platform")
+      platform = [s for s in platformRaw.stripped_strings if re.search(r"\d+", s)]
+      dataPackage["route"][index]["platform"] = platform[0] if len(platform) > 0 else None
+
+      issuesRaw = row.find("div", class_="ris")
+      *issues, = issuesRaw.stripped_strings
+      dataPackage["route"][index]["issues"] = dict()
+      dataPackage["route"][index]["issues"]["canceled"] = "Halt entfällt" in issues
+      issues = [s for s in issues if s not in ["Aktuelles", "Halt entfällt"]]
+      dataPackage["route"][index]["issues"]["cause"] = issues[0] if len(issues) > 0 else None
+
+    return dataPackage
+
+
+    # TODO: use excessStations here as well 
+
+
 
 if __name__ == "__main__":
   print("everything's fine")
@@ -279,5 +346,16 @@ if __name__ == "__main__":
   station5 = "Hamburg+Hbf"
   station6 = "Lüneburg"
   station7 = "000100001"
-  darmstadt = Station(station3)
+  station8 = "8006006"
+  # darmstadt = Station(station8)
+  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/450708/627868/187780/56347/81?ld=43158&country=DEU&protocol=https:&rt=1&date=20.12.23&time=13:37&station_evaId=104734&station_type=dep&"
+  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/747339/415855/215560/141333/81?ld=43158&country=DEU&protocol=https:&rt=1&date=20.12.23&time=13:37&station_evaId=8000068&station_type=dep&"
+  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/450708/627868/187780/56347/81?ld=43158&country=DEU&protocol=https:&rt=1&date=20.12.23&time=13:37&station_evaId=104734&station_type=dep&"
+  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/397068/313517/300536/17913/81?ld=43158&protocol=https:&rt=1&date=20.12.23&time=14:53&station_evaId=8000068&station_type=dep&"
+  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/836628/468438/43694/257029/81?ld=43158&protocol=https:&rt=1&date=20.12.23&time=15:04&station_evaId=8000105&station_type=dep&"
+  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/327147/314529/296484/39193/81?ld=43158&protocol=https:&rt=1&date=20.12.23&time=14:13&station_evaId=8000105&station_type=dep&"
+  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/478908/1274464/167130/76071/81?ld=43158&protocol=https:&rt=1&date=20.12.23&time=16:46&station_evaId=8000207&station_type=dep&"
+  darmstadt = Train(trainUrl)
+  
+
   

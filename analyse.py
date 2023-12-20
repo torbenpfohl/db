@@ -1,6 +1,10 @@
 ## download data and get value and extId data
 
 """
+Build stations database.
+"""
+
+"""
 IDEA 1:
 spread the requests out:
 start a "database" of already requested strings
