@@ -33,19 +33,12 @@ class Station:
     requestTimeDate = datetime.now()
     self.requestDate = requestTimeDate.strftime("%d.%m.%y")
     self.requestTime = requestTimeDate.strftime("%H:%M")
-    #self.requestDate = "03.09.23"  #test
-    #self.requestTime = "23:44"     #test
+    self.init()
+
+  def init(self):
     self.htmlDocument = self.getData()
     self.dataPackage = self.extractRelevantData(self.htmlDocument)
-    print(self.dataPackage, requestTimeDate)
-    print(len(self.dataPackage))
-    try:
-      stationId = int(self.name)
-      #self.storeData(self.dataPackage, requestTimeDate, self.name)
-    except:
-      pass
-    print(self.excessStations)
-    #return self.excessStations
+    return self.dataPackage
 
 
   def getData(self):
@@ -78,20 +71,12 @@ class Station:
   
   def extractRelevantData(self, htmlDocument):
     # digitalData.page.pageInfo.version = "5.45.DB.R23.08.1.a (customer/hcudb/release/23.08.1.a.0) [Aug  5 2023]"
-    # --> i.e. tracking changes to the layout!
+    # TODO: --> i.e. tracking changes to the layout!
 
     parsedHtml = BeautifulSoup(htmlDocument, "html.parser")
-    # for speed look into lxml as a parser and using css-selectors
+    # TODO: for speed look into lxml as a parser and using css-selectors
 
-    # id = journeyRow_1, journeyRow_2, ...
-    #   class = time        # reguläre abfahrtszeit
-    #   class = train       # NV, ICE, etc. ("codiert" in bild) + a-href zum zugplan
-    #   class = train       # a-href zum zugplan -> dann zugname/-nummer
-    #   class = route       # zielhalt + href zur dortigen zugtafel + simpler zugplan
-    #   class = platform    # bahnsteig
-    #   class = ris         # besonderheiten: zugausfall, verspätung, z.T. auch meldung von pünktlichkeit
-
-    # do we have to dates? 
+    # do we have to dates? i.e. do we have to account for the change 
     datesText = "".join([word for word in parsedHtml.find("div", id="sqResult").h2.strong.stripped_strings])
     dates = re.findall(r"\d{2}.\d{2}.\d{2}", datesText)
     if dates:
@@ -99,7 +84,7 @@ class Station:
     # wenn dates einen Wert hat (zwei-Elemente-Liste), dann muss ich 
     # 1. schauen, ob es ein aufeinanderfolgendes datum ist
     # 1.a. yes -> 2.
-    # 1.b. no  -> no idea...
+    # 1.b. no  -> no idea... (shouldn't really happen)
     # 2. schauen, ob ein tageswechsel statt findet, d.h. ob die zeit irgendwo von
     #    23:xx auf 00:xx umspringt.
     ## IDEE 1:
@@ -113,20 +98,13 @@ class Station:
     else:
       rowDate = 1
 
-    print(dates)
-
     # create a list of stations that are also present (but that I didn't ask for)
     otherStationsText = parsedHtml.find("p", "lastParagraph").find_all("a")
     otherStations = ["".join(a.stripped_strings) for a in otherStationsText]
     self.excessStations.update(otherStations)
-    print(otherStations)
 
     allRows = parsedHtml.find_all("tr", id=re.compile("^journeyRow_\d+"))
 
-    print("Rows in document:", len(allRows))
-
-    # reverse through allRows because this way I can validate the planedTime
-    #   and therefore calculate the delayedTime here too 
     planedTimeBefore = None
     dataPackages = list()
     for row in reversed(allRows):
@@ -139,12 +117,11 @@ class Station:
         platform = platform.replace(platformNumber, "")
       if platform and platform in otherStations:
         continue
-      dataPackage = dict()  # where all information gets stored
+
+      dataPackage = dict()
       dataPackage["platformNumber"] = platformNumber
 
       planedTime = str(row.find("td", "time").string)
-      # transform planedTime to datetime-object
-      # also: make sure the date is right
       if rowDate == 2:
         planedTime = datetime.strptime(planedTime+" "+dates[-1], "%H:%M %d.%m.%y")
         if planedTimeBefore:
@@ -173,22 +150,25 @@ class Station:
       endstation = str("".join([word for word in route.span.a.stripped_strings]))
       dataPackage["endstation"] = endstation
 
-      # extract route info in list of 2-tuples (station, planedTimeOnStation)
-      # do i need the time? if yes: than i need to verify which day and all that..
-      # 
-      if route.img:
-        route.img.replace_with("-")
-      route = "".join(route.stripped_strings).removeprefix(endstation).replace("\n", " ").split(" - ")
-      # route = [tuple(s.split("  ")) for s in route]
-      route = [placeAndTime.split("  ")[0].replace(" (Halt entfällt)", "") for placeAndTime in route]
-      self.excessStations.update(route)
-      # do I make an extra call to the train-url and get the stations (and also 
-      # add them to the train)
-      # do I need a database for the trains?
+      partialRouteRaw = " - ".join([allStops.replace("\n", " ") for allStops in route.stripped_strings][1:])
+      partialRouteRaw = [stop.split("  ") for stop in partialRouteRaw.split(" - ")]
+      partialRoute = list()
+      currentStationDatetime = planedTime
+      for stop, time in partialRouteRaw:
+        hours, minutes = time.split(":")
+        planedTimeAtStationX = currentStationDatetime.replace(hour=int(hours), minute=int(minutes))
+        if currentStationDatetime > planedTimeAtStationX:
+          planedTimeAtStationX += timedelta(day=1)
+        currentStationDatetime = planedTimeAtStationX
+        partialRoute.append([stop, planedTimeAtStationX])
+        stop = stop.removesuffix(" (Halt entfällt)")
+        self.excessStations.update(stop)
+      dataPackage["partialRoute"] = partialRoute
+
 
     # TODO: combine delayed stuff into 'issues and add a field for 'Fahrt fällt aus' with boolean datatype
       issues = row.find("td", "ris")
-      issuesText = "".join([word for word in issues.stripped_strings])  # "".join(issues.stripped_strings)
+      issuesText = "".join([word for word in issues.stripped_strings])
       delayedTime = None
       delayedBy = None
       delayCause = None
@@ -221,77 +201,33 @@ class Station:
       dataPackage["delayedBy"] = delayedBy
       dataPackage["delayCause"] = delayCause
 
-      delayOnTime_dbClass = "delayOnTime" in issues.span["class"] if issues.span else None
-      dataPackage["delayOnTime"] = delayOnTime_dbClass
+      # delayOnTime_dbClass = "delayOnTime" in issues.span["class"] if issues.span else None
+      # dataPackage["delayOnTime"] = delayOnTime_dbClass
 
       dataPackages.append(dataPackage)
     return [i for i in reversed(dataPackages)]
-  
-  # determine next call-/query-time
-  
-  def storeData(self, dataPackage, requestTimeDate, stationId):
-    # metadaten speichern (abfragezeit, ?)
-    # eine große tabelle oder viele Kleine (z.B. für jede station eine, 
-    # oder für jeden zug eine)
-    # beispielabfragen: 
-    # - kumulierte verspätungen an allen bahnhöfen über eine bestimmte zeit
-    # - verspätungen an einem bahnhof über bestimmte zeit
-    # - verspätungsverlauf eines bestimmten zuges, auf einer bestimmten strecke
-    # - auflistung von verspätungsgründen (welche und wie viele jeweils)
-    # - bei wie vielen verspätungen gründe angegeben sind
-    # - wie viele züge fahren an einem bahnhof durchschnittlich
-    # ziel:
-    # - aufzeichnung aller verbindungen
-    # - aufzeichnung aller verspätungen (verlauf?, ultimative) 
-    # wir erstellen tabellen für:
-    # -> die stationen (jede station eine)
-    # -> für züge (zugname gepaart mit einem spezifischen tag und abfahrt- und 
-    #    ankunftbahnhof)
-    con = sqlite3.connect(self.dbPath)
-    cur = con.cursor()
-    stationId = int(stationId)
-    keys = list()
-    for entry in dataPackage:
-      if not keys:
-        keys = list(entry.keys())
       
-    pass
-
-  # daten müssen weiter bereinigt werden.
-  # Bsp 1: Anfrage von Darmstadt Hbf enthält TZ Rhein Main, Darmstadt
-  # Bsp 2: Anfrage von TZ Rhein Main, Darmstadt enthält Darmstadt Hbf
-  #        und Heinrich-Hertz-Straße, Darmstadt
-  #  --> steht jeweils in der platform-Spalte und im Footer *DONE
-  # Bsp 3: Zug startet in verschiedenen Bahnhöfen, wird aber offensichtlich 
-  #        an einem Bahnhof zusammengeschlossen; erscheint aber weiterhin in der
-  #        Liste als zwei Züg; wobei nur die Zugnummer nicht übereinstimmt.
-  #        unbereinigt führt das dazu, dass eine solche Verspätung zweimal gemessen wird
-  #  --> ??? (Entscheidung dokumentieren) 
-  # Bsp 4: 
 
 class Train:
-  """
-  is called with an url
-  TODO: can also get its data from a database (redis) that is populated by the Stations-class
-    -> idea: reference the row of redis-data and in the end call store with this data to store into a more permantent database
-  """
   def __init__(self, url):
     self.url = url  # TODO: enthält datum und zeit und andere parameter: welche brauche ich und ergibt es sinn, diese zu verändern? (z.B. zeit anpassen)
+    self.init()
+  
+  def init(self):
     data = self.get(self.url)
     dataPackage = self.extractRelevantData(data)
-  
+    return dataPackage
+
   def get(self, url):
     response = requests.get(url)
     return response.text
 
   def extractRelevantData(self, data):
     parsedHtml = BeautifulSoup(data, "html.parser")
-    # route rows -> dict (order is important)
-    # route: 
-    #   station, planedArrTime, planedDepTime, delayedArrTime, delayedDepTime, platformNumber, ,issues
-    # Company:
+
     dataPackage = dict()
     dataPackage["route"] = dict()
+
     *companyRaw, = parsedHtml.find("div", "tqRemarks").stripped_strings
     for entry in companyRaw:
       if re.match(r"^Betreiber:", entry):
@@ -301,22 +237,72 @@ class Train:
         company = None
     dataPackage["company"] = company
 
+    trainNameRaw = parsedHtml.find("div", class_="tqResults").find_next("h1").string
+    trainName = " ".join(trainNameRaw.split()[2:])
+    dataPackage["trainName"] = trainName
+
+    trainDateRaw = str(parsedHtml.find("h3", class_="trainroute"))
+    trainDate = re.search(r"\d{1,2}.\d{1,2}.\d{1,2}", trainDateRaw).group()
+    trainDate = datetime.strptime(trainDate, "%d.%m.%y")
+    dataPackage["trainDate"] = trainDate
+
     routeRows = parsedHtml.find_all("div", class_=re.compile(r"tqRow trainrow_\d"))
+    planedCurrentDate = trainDate
+    delayedCurrentDate = trainDate
     for index, row in enumerate(routeRows):
       dataPackage["route"][index] = dict()
 
       station = row.find("div", class_=re.compile("station")).find("a").string
       dataPackage["route"][index]["station"] = station
 
+      # planed and delayed arrival time
       arr = row.find("div", class_="arrival")
-      arrTime = [s for s in arr.stripped_strings if re.search(r"\d{1,2}:\d{2}", s)]
-      dataPackage["route"][index]["planedArrTime"] = arrTime[0].split(" ")[-1] if len(arrTime) > 0 else None
-      dataPackage["route"][index]["delayedArrTime"] = arrTime[-1] if len(arrTime) > 1 else None
 
+      arrTimeRaw = [s for s in arr.stripped_strings if re.search(r"\d{1,2}:\d{2}", s)]
+      arrTime = arrTimeRaw[0].split(" ")[-1] if len(arrTimeRaw) > 0 else None
+      if arrTime:
+        hours, minutes = arrTime.split(":")
+        arrTime = planedCurrentDate.replace(hour=int(hours), minute=int(minutes))
+        if arrTime < planedCurrentDate:
+          # new day
+          arrTime += timedelta(days=1)
+        planedCurrentDate = arrTime
+      dataPackage["route"][index]["planedArrTime"] = arrTime
+
+      delayedArrTime = arrTimeRaw[-1] if len(arrTimeRaw) > 1 else None
+      if delayedArrTime:
+        hours, minutes = delayedArrTime.split(":")
+        delayedArrTime = planedCurrentDate.replace(hour=int(hours), minute=int(minutes))
+        if delayedArrTime < delayedCurrentDate:
+          delayedArrTime += timedelta(days=1)
+        delayedCurrentDate = delayedArrTime
+      else:
+        delayedCurrentDate = arrTime if arrTime is not None else delayedCurrentDate
+      dataPackage["route"][index]["delayedArrTime"] = delayedArrTime
+
+      # planed and delayed departure time
       dep = row.find("div", class_="departure")
-      depTime = [s for s in dep.stripped_strings if re.search(r"\d{1,2}:\d{2}", s)]
-      dataPackage["route"][index]["planedDepTime"] = depTime[0].split(" ")[-1] if len(depTime) > 0 else None
-      dataPackage["route"][index]["delayedDepTime"] = depTime[-1] if len(depTime) > 1 else None
+      
+      depTimeRaw = [s for s in dep.stripped_strings if re.search(r"\d{1,2}:\d{2}", s)]
+      depTime = depTimeRaw[0].split(" ")[-1] if len(depTimeRaw) > 0 else None
+      if depTime:
+        hours, minutes = depTime.split(":")
+        depTime = planedCurrentDate.replace(hour=int(hours), minute=int(minutes))
+        if depTime < planedCurrentDate:
+          depTime += timedelta(days=1)
+        planedCurrentDate = depTime
+      dataPackage["route"][index]["planedDepTime"] = depTime
+
+      delayedDepTime = depTimeRaw[-1] if len(depTimeRaw) > 1 else None
+      if delayedDepTime:
+        hours, minutes = delayedDepTime.split(":")
+        delayedDepTime = delayedCurrentDate.replace(hour=int(hours), minute=int(minutes))
+        if delayedDepTime < delayedCurrentDate:
+          delayedDepTime += timedelta(days=1)
+        delayedCurrentDate = delayedDepTime
+      else:
+        delayedCurrentDate = depTime if depTime is not None else depTime
+      dataPackage["route"][index]["delayedDepTime"] = delayedDepTime
 
       platformRaw = row.find("div", class_="platform")
       platform = [s for s in platformRaw.stripped_strings if re.search(r"\d+", s)]
@@ -347,15 +333,14 @@ if __name__ == "__main__":
   station6 = "Lüneburg"
   station7 = "000100001"
   station8 = "8006006"
-  # darmstadt = Station(station8)
-  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/450708/627868/187780/56347/81?ld=43158&country=DEU&protocol=https:&rt=1&date=20.12.23&time=13:37&station_evaId=104734&station_type=dep&"
-  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/747339/415855/215560/141333/81?ld=43158&country=DEU&protocol=https:&rt=1&date=20.12.23&time=13:37&station_evaId=8000068&station_type=dep&"
-  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/450708/627868/187780/56347/81?ld=43158&country=DEU&protocol=https:&rt=1&date=20.12.23&time=13:37&station_evaId=104734&station_type=dep&"
-  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/397068/313517/300536/17913/81?ld=43158&protocol=https:&rt=1&date=20.12.23&time=14:53&station_evaId=8000068&station_type=dep&"
-  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/836628/468438/43694/257029/81?ld=43158&protocol=https:&rt=1&date=20.12.23&time=15:04&station_evaId=8000105&station_type=dep&"
-  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/327147/314529/296484/39193/81?ld=43158&protocol=https:&rt=1&date=20.12.23&time=14:13&station_evaId=8000105&station_type=dep&"
-  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/478908/1274464/167130/76071/81?ld=43158&protocol=https:&rt=1&date=20.12.23&time=16:46&station_evaId=8000207&station_type=dep&"
-  darmstadt = Train(trainUrl)
+  station9 = "ZOB, Lüneburg"
+  darmstadt2 = Station(station6).init()
+  trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/535500/1225387/739576/191291/81?ld=4346&protocol=https:&rt=1&date=31.12.23&time=12:40&station_evaId=616917&station_type=dep&"
+  darmstadt = Train(trainUrl).init()
+  import pprint
+  pp = pprint.PrettyPrinter(indent=2)
+  pp.pprint(darmstadt2)
+  # print(darmstadt2)
   
 
   
