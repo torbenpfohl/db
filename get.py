@@ -29,6 +29,7 @@ class Station:
 
   def __init__(self, name):
     self.excessStations = set()
+    self.delayedCauses = set()
     self.name = name
     requestTimeDate = datetime.now()
     self.requestDate = requestTimeDate.strftime("%d.%m.%y")
@@ -38,6 +39,7 @@ class Station:
   def init(self):
     self.htmlDocument = self.getData()
     self.dataPackage = self.extractRelevantData(self.htmlDocument)
+    print(self.delayedCauses)
     return self.dataPackage
 
 
@@ -150,10 +152,25 @@ class Station:
       endstation = str("".join([word for word in route.span.a.stripped_strings]))
       dataPackage["endstation"] = endstation
 
+      print(trainName, endstation)
+
+      # sometimes there is extra info (mostly in red) under the route-element-box
+      extraInfo = route.find("div")
+      if extraInfo is not None:
+        extraInfos = list()
+        while route.find("div"):
+          extraInfo = route.div.extract()
+          extraInfos.append(extraInfo)
+      # TODO: what do I do with this information?
+          
       partialRouteRaw = " - ".join([allStops.replace("\n", " ") for allStops in route.stripped_strings][1:])
-      partialRouteRaw = [stop.split("  ") for stop in partialRouteRaw.split(" - ")]
+      partialRouteRaw = [stop.lstrip("- ") for stop in re.split(r"(?<=\d{2}:\d{2})", partialRouteRaw) if len(stop) != 0]
+      partialRouteRaw = [stop.split("  ") for stop in partialRouteRaw]
       partialRoute = list()
       currentStationDatetime = planedTime
+      # TODO: problem with the red ancouncement text 
+      #  sieht so aus als wäres es normalerweise ein div-element nach den den routen-halten
+      # print(partialRouteRaw)
       for stop, time in partialRouteRaw:
         hours, minutes = time.split(":")
         planedTimeAtStationX = currentStationDatetime.replace(hour=int(hours), minute=int(minutes))
@@ -166,40 +183,46 @@ class Station:
       dataPackage["partialRoute"] = partialRoute
 
 
-    # TODO: combine delayed stuff into 'issues and add a field for 'Fahrt fällt aus' with boolean datatype
+      # TODO: combine delayed stuff into 'issues and add a field for 'Fahrt fällt aus' with boolean datatype
+      # delayedBy, delayedTime, delayedCause, canceled
+      dataPackage["issues"] = dict()
       issues = row.find("td", "ris")
       issuesText = "".join([word for word in issues.stripped_strings])
       delayedTime = None
       delayedBy = None
-      delayCause = None
+      cause = None
+      # canceled = None
       if len(issuesText) != 0:
         # TODO: also search for a new time, like a new date (if present)
         #   as well as understanding, what other configurations are possible in this cell
-        # TODO: look in the route-box for red text - it might contain more reasons for delays 
         delayedTimeMatch = re.search(r"\d{2}:\d{2}", issuesText)
         if delayedTimeMatch:
-          delayedTime = delayedTimeMatch.group()
-          delayCause = issuesText.replace(delayedTime, "")
-          if delayCause == "":
-            delayCause = None
+          delayedTimeRaw = delayedTimeMatch.group()
+          cause = issuesText.replace(delayedTimeRaw, "")
+          cause = cause.strip(", ")
           # delayed by
           #   if date is not available with the issuesText, than it will be
           #   obvious while calculation the delayed by value (because it will
           #   be negative)
-          hours, minutes = delayedTime.split(":")
+          hours, minutes = delayedTimeRaw.split(":")
           delayedTime = planedTime.replace(hour=int(hours), minute=int(minutes))
           delayedBy = delayedTime - planedTime
-          if delayedBy.total_seconds() == 0:
-            delayedTime = None
-            delayedBy = None
-          elif delayedBy.total_seconds() < 0:
+          if delayedBy.total_seconds() < 0:
             delayedTime += timedelta(days=1)
-            delayedBy += timedelta(days=1)
+            delayedBy = delayedTime - planedTime
         else:
-          delayCause = issuesText
-      dataPackage["delayedTime"] = delayedTime
-      dataPackage["delayedBy"] = delayedBy
-      dataPackage["delayCause"] = delayCause
+          cause = issuesText
+        # If the whole train is canceled, I do not need to make a request to the train
+        # TODO: how often does this occur? is it worth to filter for it?
+        # canceledPermutations = ["Fahrt fällt aus", "Halt entfällt"]
+        # search in delayedCause for "Halt entfällt" and other things
+        # re.search(r"", delayedCause)
+        if cause != "":
+          self.delayedCauses.update([cause])
+      dataPackage["issues"]["delayedTime"] = delayedTime
+      dataPackage["issues"]["delayedBy"] = delayedBy
+      dataPackage["issues"]["cause"] = cause
+      # dataPackage["issues"]["canceled"] = canceled
 
       # delayOnTime_dbClass = "delayOnTime" in issues.span["class"] if issues.span else None
       # dataPackage["delayOnTime"] = delayOnTime_dbClass
@@ -334,12 +357,13 @@ if __name__ == "__main__":
   station7 = "000100001"
   station8 = "8006006"
   station9 = "ZOB, Lüneburg"
-  darmstadt2 = Station(station6).init()
+  station10 = "8098105"
+  darmstadt2 = Station(station10)
   trainUrl = "https://reiseauskunft.bahn.de/bin/traininfo.exe/dn/535500/1225387/739576/191291/81?ld=4346&protocol=https:&rt=1&date=31.12.23&time=12:40&station_evaId=616917&station_type=dep&"
-  darmstadt = Train(trainUrl).init()
+  # darmstadt = Train(trainUrl)
   import pprint
   pp = pprint.PrettyPrinter(indent=2)
-  pp.pprint(darmstadt2)
+  # pp.pprint(darmstadt2)
   # print(darmstadt2)
   
 

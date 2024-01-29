@@ -1,0 +1,17 @@
+APScheduler==3.10.4
+async-timeout==4.0.3
+beautifulsoup4==4.12.2
+bs4==0.0.1
+distlib==0.3.7
+dnspython==2.4.2
+filelock==3.12.3
+platformdirs==3.10.0
+pygermanet==1.0.2
+pymongo==4.5.0
+redis==5.0.1
+schedule==1.2.1
+soupsieve==2.5
+typeguard==4.1.5
+typing_extensions==4.7.1
+tzlocal==5.2
+virtualenv==20.24.3
