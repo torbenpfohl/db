@@ -1,3 +1,5 @@
-__pycache__
-*.rdb
+src/__pycache__
+src/*.rdb
+tests/__pycache__
+.pytest_cache
 .venv

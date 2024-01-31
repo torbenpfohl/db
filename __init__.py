@@ -1,3 +1,0 @@
-import get
-
-print("db")
