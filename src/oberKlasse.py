@@ -16,7 +16,7 @@ TODO: Wie wird mit sich ändernden An-/Abfahrtszeiten verfahren?
 
 """
 
-from get import Station, Train
+from api import Station, Train
 import schedule
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED
@@ -31,6 +31,8 @@ def wrapper(func):
   def inner(*args, **kwargs):
     pass
   return inner
+
+
 
 class Management:
   def __init__(self):
