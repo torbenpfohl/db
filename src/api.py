@@ -2,6 +2,9 @@
 Implement an API for: 
  - https://reiseauskunft.bahn.de/bin/bhftafel.exe/<Station>
  - https://reiseauskunft.bahn.de/bin/traininfo.exe/<Train>
+
+rt=0 | rt=1  (in the url) -> 0 means no delay info; 1 is the opposite
+rtMode=0 | rtMode=1
 """
 
 import re
@@ -10,7 +13,6 @@ from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 
-from control import track_bhftafel_version
 
 class Station:
   """API for https://reiseauskunft.bahn.de/bin/bhftafel.exe/
@@ -20,8 +22,9 @@ class Station:
 
   def __init__(self, name, check_version=False):
     self.check_version = check_version
-    self.excess_stations = set()
-    self.delayed_causes = set()
+    self.bhftafel_version = None
+    self.excess_stations = set()  # TODO: use that somewhere
+    self.delayed_causes = set()  # TODO: use that somewhere
     self.name = name
     request_time_date = datetime.now()
     self.request_date = request_time_date.strftime("%d.%m.%y")
@@ -72,7 +75,7 @@ class Station:
         line = line.strip()
         if line.startswith("digitalData.page.pageInfo.version"):
           version = line.split("=")[-1].strip(' "')
-      track_bhftafel_version(version)
+      self.bhftafel_version = version
 
     # do we have to dates? i.e. do we have to account for the change 
     dates_text = "".join(parsed_html.find("div", id="sqResult").h2.strong.stripped_strings)
@@ -206,139 +209,134 @@ class Station:
       
 
 class Train:
+  """API for https://reiseauskunft.bahn.de/bin/traininfo.exe/"""
   def __init__(self, url):
-    self.url = url  # TODO: enthält datum und zeit und andere parameter: welche brauche ich und ergibt es sinn, diese zu verändern? (z.B. zeit anpassen)
+    self.url = url
     self.init()
   
   def init(self):
-    data = self.get(self.url)
-    dataPackage = self.extractRelevantData(data)
-    return dataPackage
+    self.data = self.get_data(self.url)
+    self.data_package = self.extract_relevant_data(self.data)
+    return self.data_package
 
-  def get(self, url):
+  def get_data(self, url):
+    url = re.sub(r"rt=0", "rt=1", url)
+    url = re.sub(r"rtMode=0", "rtMode=1", url)
     response = requests.get(url)
     return response.text
 
-  def extractRelevantData(self, data):
-    parsedHtml = BeautifulSoup(data, "html.parser")
+  def extract_relevant_data(self, data):
+    parsed_html = BeautifulSoup(data, "html.parser")
 
-    dataPackage = dict()
-    dataPackage["route"] = dict()
+    data_package = dict()
 
-    *companyRaw, = parsedHtml.find("div", "tqRemarks").stripped_strings
-    for entry in companyRaw:
+    *company_raw, = parsed_html.find("div", "tqRemarks").stripped_strings
+    for entry in company_raw:
       if re.match(r"^Betreiber:", entry):
         company = entry.removeprefix("Betreiber:").strip()
         break
       else:
         company = None
-    dataPackage["company"] = company
 
-    trainNameRaw = parsedHtml.find("div", class_="tqResults").find_next("h1").string
-    trainName = " ".join(trainNameRaw.split()[2:])
-    dataPackage["trainName"] = trainName
+    data_package["company"] = company
 
-    trainDateRaw = str(parsedHtml.find("h3", class_="trainroute"))
-    trainDate = re.search(r"\d{1,2}.\d{1,2}.\d{1,2}", trainDateRaw).group()
-    trainDate = datetime.strptime(trainDate, "%d.%m.%y")
-    dataPackage["trainDate"] = trainDate
+    train_name_text = parsed_html.find("div", class_="tqResults").find_next("h1").string
+    train_name = " ".join(train_name_text.split()[2:])
 
-    routeRows = parsedHtml.find_all("div", class_=re.compile(r"tqRow trainrow_\d"))
-    planedCurrentDate = trainDate
-    delayedCurrentDate = trainDate
-    for index, row in enumerate(routeRows):
-      dataPackage["route"][index] = dict()
+    data_package["trainName"] = train_name
+
+    train_date_text = str(parsed_html.find("h3", class_="trainroute"))
+    train_date = re.search(r"\d{1,2}.\d{1,2}.\d{1,2}", train_date_text).group()
+    train_date = datetime.strptime(train_date, "%d.%m.%y")
+    data_package["trainDate"] = train_date
+
+    route_rows = parsed_html.find_all("div", class_=re.compile(r"tqRow trainrow_\d"))
+    planed_current_date = train_date
+    delayed_current_date = train_date
+    data_package["route"] = dict()
+    for index, row in enumerate(route_rows):
+      data_package["route"][index] = dict()
 
       station = row.find("div", class_=re.compile("station")).find("a").string
-      dataPackage["route"][index]["station"] = station
+      data_package["route"][index]["station"] = station
 
-      # planed and delayed arrival time
-      arr = row.find("div", class_="arrival")
+      # Planed and delayed arrival time.
+      arrival = row.find("div", class_="arrival")
 
-      arrTimeRaw = [s for s in arr.stripped_strings if re.search(r"\d{1,2}:\d{2}", s)]
-      arrTime = arrTimeRaw[0].split(" ")[-1] if len(arrTimeRaw) > 0 else None
-      if arrTime:
-        hours, minutes = arrTime.split(":")
-        arrTime = planedCurrentDate.replace(hour=int(hours), minute=int(minutes))
-        if arrTime < planedCurrentDate:
-          # new day
-          arrTime += timedelta(days=1)
-        planedCurrentDate = arrTime
-      dataPackage["route"][index]["planedArrTime"] = arrTime
+      arrival_time = None
+      arrival_time_raw = [string_ for string_ in arrival.stripped_strings if re.search(r"\d{1,2}:\d{2}", string_)]
+      if len(arrival_time_raw) > 0:
+        arrival_time = arrival_time_raw[0].split(" ")[-1]
+      if arrival_time:
+        hours, minutes = arrival_time.split(":")
+        arrival_time = planed_current_date.replace(hour=int(hours), minute=int(minutes))
+        if arrival_time < planed_current_date:
+          arrival_time += timedelta(days=1)
+        planed_current_date = arrival_time
 
-      delayedArrTime = arrTimeRaw[-1] if len(arrTimeRaw) > 1 else None
-      if delayedArrTime:
-        hours, minutes = delayedArrTime.split(":")
-        delayedArrTime = planedCurrentDate.replace(hour=int(hours), minute=int(minutes))
-        if delayedArrTime < delayedCurrentDate:
-          delayedArrTime += timedelta(days=1)
-        delayedCurrentDate = delayedArrTime
+      data_package["route"][index]["planedArrTime"] = arrival_time
+
+      delayed_arrival_time = None
+      if len(arrival_time_raw) > 1:
+        delayed_arrival_time = arrival_time_raw[-1]
+      if delayed_arrival_time:
+        hours, minutes = delayed_arrival_time.split(":")
+        delayed_arrival_time = planed_current_date.replace(hour=int(hours), minute=int(minutes))
+        if delayed_arrival_time < delayed_current_date:
+          delayed_arrival_time += timedelta(days=1)
+        delayed_current_date = delayed_arrival_time
       else:
-        delayedCurrentDate = arrTime if arrTime is not None else delayedCurrentDate
-      dataPackage["route"][index]["delayedArrTime"] = delayedArrTime
+        delayed_current_date = arrival_time if arrival_time is not None else delayed_current_date
+      data_package["route"][index]["delayedArrTime"] = delayed_arrival_time
 
-      # planed and delayed departure time
-      dep = row.find("div", class_="departure")
+      # Planed and delayed departure time.
+      departure = row.find("div", class_="departure")
       
-      depTimeRaw = [s for s in dep.stripped_strings if re.search(r"\d{1,2}:\d{2}", s)]
-      depTime = depTimeRaw[0].split(" ")[-1] if len(depTimeRaw) > 0 else None
-      if depTime:
-        hours, minutes = depTime.split(":")
-        depTime = planedCurrentDate.replace(hour=int(hours), minute=int(minutes))
-        if depTime < planedCurrentDate:
-          depTime += timedelta(days=1)
-        planedCurrentDate = depTime
-      dataPackage["route"][index]["planedDepTime"] = depTime
+      departure_time_raw = [string_ for string_ in departure.stripped_strings if re.search(r"\d{1,2}:\d{2}", string_)]
+      departure_time = None
+      if len(departure_time_raw) > 0:
+        departure_time = departure_time_raw[0].split(" ")[-1]
+      if departure_time:
+        hours, minutes = departure_time.split(":")
+        departure_time = planed_current_date.replace(hour=int(hours), minute=int(minutes))
+        if departure_time < planed_current_date:
+          departure_time += timedelta(days=1)
+        planed_current_date = departure_time
+      data_package["route"][index]["planedDepTime"] = departure_time
 
-      delayedDepTime = depTimeRaw[-1] if len(depTimeRaw) > 1 else None
-      if delayedDepTime:
-        hours, minutes = delayedDepTime.split(":")
-        delayedDepTime = delayedCurrentDate.replace(hour=int(hours), minute=int(minutes))
-        if delayedDepTime < delayedCurrentDate:
-          delayedDepTime += timedelta(days=1)
-        delayedCurrentDate = delayedDepTime
+      delayed_departure_time = None
+      if len(departure_time_raw) > 1:
+        delayed_departure_time = departure_time_raw[-1]
+      if delayed_departure_time:
+        hours, minutes = delayed_departure_time.split(":")
+        delayed_departure_time = delayed_current_date.replace(hour=int(hours), minute=int(minutes))
+        if delayed_departure_time < delayed_current_date:
+          delayed_departure_time += timedelta(days=1)
+        delayed_current_date = delayed_departure_time
       else:
-        delayedCurrentDate = depTime if depTime is not None else depTime
-      dataPackage["route"][index]["delayedDepTime"] = delayedDepTime
+        delayed_current_date = departure_time if departure_time is not None else departure_time
+      data_package["route"][index]["delayedDepTime"] = delayed_departure_time
 
-      platformRaw = row.find("div", class_="platform")
-      platform = [s for s in platformRaw.stripped_strings if re.search(r"\d+", s)]
-      dataPackage["route"][index]["platform"] = platform[0] if len(platform) > 0 else None
+      platform_raw = row.find("div", class_="platform")
+      platform_raw = list(platform_raw.stripped_strings)
+      platform = None
+      if len(platform_raw) > 1 and re.search("\d+", platform_raw[-1]) is not None:
+        platform = platform_raw[-1]
 
-      issuesRaw = row.find("div", class_="ris")
-      *issues, = issuesRaw.stripped_strings
-      dataPackage["route"][index]["issues"] = dict()
-      dataPackage["route"][index]["issues"]["canceled"] = "Halt entfällt" in issues
-      issues = [s for s in issues if s not in ["Aktuelles", "Halt entfällt"]]
-      dataPackage["route"][index]["issues"]["cause"] = issues[0] if len(issues) > 0 else None
+      data_package["route"][index]["platform"] = platform
 
-    return dataPackage
-
+      issues_raw = row.find("div", class_="ris")
+      *issues, = issues_raw.stripped_strings
+      data_package["route"][index]["issues"] = dict()
+      data_package["route"][index]["issues"]["canceled"] = "Halt entfällt" in issues
+      issues = [string_ for string_ in issues if string_ not in ["Aktuelles", "Halt entfällt"]]
+      data_package["route"][index]["issues"]["cause"] = issues[0] if len(issues) > 0 else None
 
     # TODO: use excessStations here as well 
+
+    return data_package
 
 
 
 if __name__ == "__main__":
-  print("everything's fine")
-  station0 = "Reinheim(Odenw)"
-  station1 = "darmstadt+ost"
-  station2 = "Frankfurt(Main)Hbf"
-  station3 = "Darmstadt+hbf"
-  station4 = "Berlin+Hbf"
-  station5 = "Hamburg+Hbf"
-  station6 = "Lüneburg"
-  station7 = "000100001"
-  station8 = "8006006"
-  station9 = "ZOB, Lüneburg"
-  station10 = "8098105"
-  station11 = "8089211"  # mannheimer str. frankfurt hbf
-  import pprint
-  pp = pprint.PrettyPrinter(width=160)
-  s = Station(station2)
-  for i in s.data_package:
-    pp.pprint(i)
-    print("\n")
-  
-
-  
+  print("everything's fine")  
