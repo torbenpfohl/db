@@ -3,3 +3,4 @@ src/*.rdb
 tests/__pycache__
 .pytest_cache
 .venv
+.vscode
